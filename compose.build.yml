@@ -1,0 +1,6 @@
+services:
+  ast-treesitter:
+    image: local/ast-treesitter-api:latest
+    build:
+      context: .
+      dockerfile: Dockerfile

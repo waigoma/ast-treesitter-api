@@ -1,0 +1,5 @@
+# 例: ghcr.io/<GitHub のユーザーまたは org>/<リポジトリ名>:latest
+# 利用例: docker compose -f compose.yml -f compose.ghcr.yml up -d
+services:
+  ast-treesitter:
+    image: ghcr.io/waigoma/ast-treesitter-api:latest

@@ -1,0 +1,11 @@
+services:
+  ast-treesitter:
+    container_name: ast-treesitter
+    restart: unless-stopped
+    ports:
+      - "8008:8008"
+    environment:
+      - PORT=8008
+      - HOST=0.0.0.0
+      - MAX_TREE_DEPTH=${MAX_TREE_DEPTH:-512}
+      - MAX_NODES=${MAX_NODES:-200000}
