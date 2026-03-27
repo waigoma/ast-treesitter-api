@@ -1,5 +1,6 @@
 services:
   ast-treesitter:
+    build: .
     container_name: ast-treesitter
     restart: unless-stopped
     ports:

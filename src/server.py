@@ -66,6 +66,197 @@ def _discover_languages() -> list[str]:
 SUPPORTED_LANGUAGES: list[str] = _discover_languages()
 logger.info("Loaded grammars: %s", ", ".join(SUPPORTED_LANGUAGES) or "(none)")
 
+# ---------------------------------------------------------------------------
+# Chunk boundary node types per language
+# ---------------------------------------------------------------------------
+# Top-level AST node types that should each become their own chunk.
+# Languages not listed (or with empty set) → entire file = one chunk.
+
+_CHUNK_BOUNDARY_TYPES: dict[str, set[str]] = {
+    "python": {"function_definition", "class_definition", "decorated_definition"},
+    "javascript": {
+        "function_declaration", "class_declaration", "export_statement",
+        "lexical_declaration",
+    },
+    "typescript": {
+        "function_declaration", "class_declaration", "export_statement",
+        "lexical_declaration", "interface_declaration", "type_alias_declaration",
+        "enum_declaration", "module",
+    },
+    "tsx": {
+        "function_declaration", "class_declaration", "export_statement",
+        "lexical_declaration", "interface_declaration", "type_alias_declaration",
+        "enum_declaration", "module",
+    },
+    "java": {
+        "class_declaration", "interface_declaration", "enum_declaration",
+        "annotation_type_declaration", "record_declaration",
+    },
+    "c": {
+        "function_definition", "struct_specifier", "enum_specifier",
+        "union_specifier", "type_definition",
+    },
+    "cpp": {
+        "function_definition", "class_specifier", "struct_specifier",
+        "enum_specifier", "namespace_definition", "template_declaration",
+        "type_definition",
+    },
+    "c_sharp": {
+        "class_declaration", "struct_declaration", "interface_declaration",
+        "enum_declaration", "namespace_declaration", "method_declaration",
+        "record_declaration",
+    },
+    "go": {"function_declaration", "method_declaration", "type_declaration"},
+    "rust": {
+        "function_item", "struct_item", "enum_item", "impl_item",
+        "trait_item", "mod_item", "type_item", "const_item", "static_item",
+        "macro_definition",
+    },
+    "ruby": {"method", "class", "module", "singleton_method"},
+    "php": {
+        "function_definition", "class_declaration", "interface_declaration",
+        "trait_declaration", "enum_declaration", "namespace_definition",
+    },
+    "kotlin": {
+        "function_declaration", "class_declaration", "object_declaration",
+        "interface_declaration",
+    },
+    "scala": {
+        "function_definition", "class_definition", "object_definition",
+        "trait_definition",
+    },
+    "dart": {
+        "function_signature", "class_definition", "enum_declaration",
+        "extension_declaration", "mixin_declaration",
+    },
+    "lua": {"function_declaration", "local_function_declaration"},
+    "elixir": {"call"},
+    "bash": {"function_definition"},
+    "clojure": {"list_lit"},
+    # No definition boundaries – return whole file as one chunk
+    "html": set(),
+    "css": set(),
+    "json": set(),
+    "toml": set(),
+    "yaml": set(),
+}
+
+# Node types that should attach to the *following* definition as context.
+_CONTEXT_NODE_TYPES: dict[str, set[str]] = {
+    "rust": {"attribute_item", "line_comment", "block_comment"},
+    "java": {"marker_annotation", "annotation", "line_comment", "block_comment"},
+    "kotlin": {"annotation", "line_comment", "multiline_comment"},
+    "c_sharp": {"attribute_list", "comment"},
+}
+
+
+def _is_context_node(node: Node, language: str) -> bool:
+    """Return True if *node* is a comment / decorator that belongs to the next definition."""
+    if node.type == "comment":
+        return True
+    extra = _CONTEXT_NODE_TYPES.get(language)
+    if extra and node.type in extra:
+        return True
+    return False
+
+
+def _make_grouped_chunk(
+    nodes: list[Node],
+    source_bytes: bytes,
+    is_preamble: bool,
+) -> dict[str, Any]:
+    """Merge a run of non-definition nodes into one chunk dict."""
+    start_byte = nodes[0].start_byte
+    end_byte = nodes[-1].end_byte
+    label = "preamble" if is_preamble else "other"
+    r_s, c_s = nodes[0].start_point
+    r_e, c_e = nodes[-1].end_point
+    return {
+        "chunk_type": label,
+        "node_type": label,
+        "text": source_bytes[start_byte:end_byte].decode("utf-8", errors="replace"),
+        "start_byte": start_byte,
+        "end_byte": end_byte,
+        "start_point": {"row": r_s, "column": c_s},
+        "end_point": {"row": r_e, "column": c_e},
+    }
+
+
+def _chunk_source(
+    tree: Tree,
+    source_bytes: bytes,
+    language: str,
+    include_context: bool,
+) -> list[dict[str, Any]]:
+    """Split source into semantic chunks using tree-sitter AST."""
+    boundary_types = _CHUNK_BOUNDARY_TYPES.get(language, set())
+    root = tree.root_node
+
+    # Languages with no boundary types → return the whole file as one chunk
+    if not boundary_types:
+        text = source_bytes.decode("utf-8", errors="replace")
+        if not text.strip():
+            return []
+        r_s, c_s = root.start_point
+        r_e, c_e = root.end_point
+        return [{
+            "chunk_type": "other",
+            "node_type": root.type,
+            "text": text,
+            "start_byte": root.start_byte,
+            "end_byte": root.end_byte,
+            "start_point": {"row": r_s, "column": c_s},
+            "end_point": {"row": r_e, "column": c_e},
+        }]
+
+    chunks: list[dict[str, Any]] = []
+    pending: list[Node] = []
+
+    for i in range(root.child_count):
+        child = root.child(i)
+        if child is None or not child.is_named:
+            continue
+
+        if child.type in boundary_types:
+            # Absorb trailing context nodes (comments, annotations) into this definition
+            context_nodes: list[Node] = []
+            if include_context and pending:
+                while pending and _is_context_node(pending[-1], language):
+                    context_nodes.insert(0, pending.pop())
+
+            # Flush remaining pending nodes as preamble / other
+            if pending:
+                chunks.append(
+                    _make_grouped_chunk(pending, source_bytes, is_preamble=(len(chunks) == 0))
+                )
+                pending = []
+
+            # Build the definition chunk (with absorbed context)
+            all_nodes = context_nodes + [child]
+            sb = all_nodes[0].start_byte
+            eb = all_nodes[-1].end_byte
+            r_s, c_s = all_nodes[0].start_point
+            r_e, c_e = all_nodes[-1].end_point
+            chunks.append({
+                "chunk_type": "definition",
+                "node_type": child.type,
+                "text": source_bytes[sb:eb].decode("utf-8", errors="replace"),
+                "start_byte": sb,
+                "end_byte": eb,
+                "start_point": {"row": r_s, "column": c_s},
+                "end_point": {"row": r_e, "column": c_e},
+            })
+        else:
+            pending.append(child)
+
+    # Flush remaining non-definition nodes
+    if pending:
+        chunks.append(
+            _make_grouped_chunk(pending, source_bytes, is_preamble=(len(chunks) == 0))
+        )
+
+    return chunks
+
 
 def _node_to_dict(
     node: Node,
@@ -159,6 +350,39 @@ class ParseResponse(BaseModel):
     sexp: Optional[str] = None
 
 
+# --- Chunk models -----------------------------------------------------------
+
+class ChunkRequest(BaseModel):
+    language: str = Field(..., description="Grammar name (e.g. python, javascript).")
+    source: str = Field(..., description="Source code to chunk.")
+    include_context: bool = Field(
+        True,
+        description="Attach leading comments / decorators to the following definition.",
+    )
+
+
+class ChunkItem(BaseModel):
+    chunk_type: str = Field(
+        ...,
+        description='Semantic label: "preamble", "definition", or "other".',
+    )
+    node_type: str = Field(
+        ...,
+        description='Tree-sitter node type (e.g. "function_definition") or "preamble"/"other".',
+    )
+    text: str
+    start_byte: int
+    end_byte: int
+    start_point: dict[str, int]
+    end_point: dict[str, int]
+
+
+class ChunkResponse(BaseModel):
+    language: str
+    chunks: list[ChunkItem]
+    chunk_count: int
+
+
 @app.get("/health")
 async def health() -> dict[str, Any]:
     return {
@@ -213,6 +437,36 @@ async def parse_code(request: ParseRequest) -> ParseResponse:
         sexp_str = str(tree.root_node)
 
     return ParseResponse(language=lang, tree=payload, sexp=sexp_str)
+
+
+@app.post("/v1/chunk", response_model=ChunkResponse)
+@app.post("/chunk", response_model=ChunkResponse)
+async def chunk_code(request: ChunkRequest) -> ChunkResponse:
+    lang = request.language.strip().lower()
+    if not lang:
+        raise HTTPException(400, "language is empty")
+    if lang not in SUPPORTED_LANGUAGES:
+        raise HTTPException(
+            400,
+            f"unsupported language: {request.language!r}. "
+            f"Use GET /v1/languages for available grammars.",
+        )
+    try:
+        parser = get_parser(lang)
+    except Exception as exc:
+        logger.exception("get_parser failed")
+        raise HTTPException(500, f"failed to load parser: {exc}") from exc
+
+    source_bytes = request.source.encode("utf-8")
+    tree = parser.parse(source_bytes)
+    try:
+        raw_chunks = _chunk_source(tree, source_bytes, lang, request.include_context)
+    except Exception as exc:
+        logger.exception("chunking failed")
+        raise HTTPException(500, f"chunking failed: {exc}") from exc
+
+    chunks = [ChunkItem(**c) for c in raw_chunks]
+    return ChunkResponse(language=lang, chunks=chunks, chunk_count=len(chunks))
 
 
 if __name__ == "__main__":
