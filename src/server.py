@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 from typing import Any, Optional
 
 import uvicorn
@@ -158,6 +159,121 @@ def _is_context_node(node: Node, language: str) -> bool:
     if extra and node.type in extra:
         return True
     return False
+
+
+# ---------------------------------------------------------------------------
+# Extension / strategy resolution
+# ---------------------------------------------------------------------------
+# Maps a file extension to either a tree-sitter grammar name, or the special
+# plain-chunking strategies "markdown" / "text".
+
+_EXTENSION_MAP: dict[str, str] = {
+    # markdown
+    ".md": "markdown", ".markdown": "markdown", ".mdx": "markdown",
+    ".mkd": "markdown", ".mdown": "markdown",
+    # plain text
+    ".txt": "text", ".text": "text", ".log": "text",
+    ".rst": "text", ".csv": "text", ".tsv": "text",
+    # code -> grammar name
+    ".py": "python", ".pyi": "python",
+    ".js": "javascript", ".mjs": "javascript", ".cjs": "javascript", ".jsx": "javascript",
+    ".ts": "typescript", ".tsx": "tsx",
+    ".java": "java",
+    ".c": "c", ".h": "c",
+    ".cpp": "cpp", ".cc": "cpp", ".cxx": "cpp", ".hpp": "cpp",
+    ".cs": "c_sharp",
+    ".go": "go",
+    ".rs": "rust",
+    ".rb": "ruby",
+    ".php": "php",
+    ".kt": "kotlin", ".kts": "kotlin",
+    ".scala": "scala",
+    ".lua": "lua",
+    ".ex": "elixir", ".exs": "elixir",
+    ".sh": "bash", ".bash": "bash",
+    ".html": "html", ".htm": "html",
+    ".css": "css",
+    ".json": "json",
+    ".toml": "toml",
+    ".yaml": "yaml", ".yml": "yaml",
+}
+
+_VALID_MODES = {"auto", "ast", "markdown", "text"}
+
+
+def _ext_of(filename: str) -> str:
+    return os.path.splitext(filename)[1].lower()
+
+
+def _resolve_grammar(language: Optional[str], filename: Optional[str]) -> Optional[str]:
+    """Return a supported grammar name from language or filename, else None."""
+    if language:
+        lang = language.strip().lower()
+        if lang in SUPPORTED_LANGUAGES:
+            return lang
+    if filename:
+        mapped = _EXTENSION_MAP.get(_ext_of(filename))
+        if mapped and mapped in SUPPORTED_LANGUAGES:
+            return mapped
+    return None
+
+
+def _resolve_strategy(
+    filename: Optional[str],
+    language: Optional[str],
+    mode: Optional[str],
+) -> tuple[str, Optional[str]]:
+    """Resolve (strategy, grammar).
+
+    strategy in {"ast", "markdown", "text"}; grammar is the tree-sitter name
+    when strategy == "ast", else None. Raises HTTPException(400) when an explicit
+    request cannot be satisfied.
+    """
+    m = (mode or "auto").strip().lower()
+    if m not in _VALID_MODES:
+        raise HTTPException(400, f"invalid mode: {mode!r}. Use auto/ast/markdown/text.")
+
+    if m == "markdown":
+        return ("markdown", None)
+    if m == "text":
+        return ("text", None)
+    if m == "ast":
+        grammar = _resolve_grammar(language, filename)
+        if grammar is None:
+            raise HTTPException(
+                400,
+                "mode=ast requires a known grammar via language or filename. "
+                "See GET /v1/languages.",
+            )
+        return ("ast", grammar)
+
+    # m == "auto"
+    if filename:
+        mapped = _EXTENSION_MAP.get(_ext_of(filename))
+        if mapped == "markdown":
+            return ("markdown", None)
+        if mapped == "text":
+            return ("text", None)
+        if mapped is not None and mapped in SUPPORTED_LANGUAGES:
+            return ("ast", mapped)
+        # unknown extension -> fall through to language / text fallback
+
+    if language:
+        lang = language.strip().lower()
+        if lang == "markdown":
+            return ("markdown", None)
+        if lang == "text":
+            return ("text", None)
+        if lang and lang != "auto":
+            if lang in SUPPORTED_LANGUAGES:
+                return ("ast", lang)
+            raise HTTPException(
+                400,
+                f"unsupported language: {language!r}. "
+                f"Use GET /v1/languages for available grammars.",
+            )
+
+    return ("text", None)
 
 
 def _make_grouped_chunk(
