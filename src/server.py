@@ -737,11 +737,13 @@ class ChunkRequest(BaseModel):
 class ChunkItem(BaseModel):
     chunk_type: str = Field(
         ...,
-        description='Semantic label: "preamble", "definition", or "other".',
+        description='Semantic label: "preamble", "definition", "other" (AST), '
+        '"section" (Markdown), or "text" (plain text).',
     )
     node_type: str = Field(
         ...,
-        description='Tree-sitter node type (e.g. "function_definition") or "preamble"/"other".',
+        description='Tree-sitter node type (e.g. "function_definition"), '
+        '"preamble"/"other" (AST), or "section"/"text" (plain).',
     )
     text: str
     start_byte: int

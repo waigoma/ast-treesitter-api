@@ -306,3 +306,21 @@ def test_mode_text_overrides_python_filename():
     r = client.post("/v1/chunk", json={"filename": "a.py", "source": "def f(): pass\n", "mode": "text"})
     assert r.status_code == 200
     assert r.json()["language"] == "text"
+
+
+def test_markdown_multibyte_offsets():
+    # Spec §9: byte offsets must stay correct for multibyte (Japanese) markdown.
+    src = "# 日本語見出し\nあいうえお かきくけこ\n\n## 次の節\nテスト本文\n"
+    encoded = src.encode("utf-8")
+    for c in _chunk_markdown(src):
+        assert encoded[c["start_byte"]:c["end_byte"]] == c["text"].encode("utf-8")
+
+
+def test_markdown_multibyte_offsets_after_size_split():
+    # Long multibyte section forced through size rescue keeps byte offsets correct.
+    src = "# 章\n" + ("あいうえおかきくけこ\n" * 40)
+    out = _apply_size_limit(_chunk_markdown(src), 80, 8, False)
+    encoded = src.encode("utf-8")
+    assert any(c.get("part") for c in out)  # confirm splitting happened
+    for c in out:
+        assert encoded[c["start_byte"]:c["end_byte"]] == c["text"].encode("utf-8")
