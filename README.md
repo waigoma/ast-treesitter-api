@@ -237,7 +237,7 @@ curl -s http://127.0.0.1:8008/v1/chunk \
 
 | フィールド | 説明 |
 |---|---|
-| `chunk_type` | `definition` / `context` / `section` / `text` |
+| `chunk_type` | `preamble` / `definition` / `other` (AST) ・ `section` (Markdown) ・ `text` (テキスト) |
 | `node_type` | AST ノード種別 (AST) または `"section"` / `"text"` |
 | `text` | チャンク本文 |
 | `start_byte` / `end_byte` | ソース内バイトオフセット |
