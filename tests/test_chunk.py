@@ -226,3 +226,83 @@ def test_multibyte_offsets():
     encoded = src.encode("utf-8")
     for c in out:
         assert encoded[c["start_byte"]:c["end_byte"]] == c["text"].encode("utf-8")
+
+
+from fastapi.testclient import TestClient
+from server import app
+
+client = TestClient(app)
+
+
+def test_endpoint_markdown_via_filename():
+    src = "# Title\nintro\n\n## A\n" + ("word " * 5) + "\n"
+    r = client.post("/v1/chunk", json={"filename": "README.md", "source": src})
+    assert r.status_code == 200
+    body = r.json()
+    assert body["language"] == "markdown"
+    assert body["chunk_count"] >= 2
+
+
+def test_endpoint_text_via_filename():
+    r = client.post("/v1/chunk", json={"filename": "a.txt", "source": "x" * 1200})
+    assert r.status_code == 200
+    body = r.json()
+    assert body["language"] == "text"
+    assert body["chunk_count"] > 1
+    assert body["chunks"][0]["part"] == 1
+
+
+def test_endpoint_unknown_filename_falls_back_to_text():
+    r = client.post("/v1/chunk", json={"filename": "x.weird", "source": "hello"})
+    assert r.status_code == 200
+    assert r.json()["language"] == "text"
+
+
+def test_endpoint_empty_source_400():
+    r = client.post("/v1/chunk", json={"source": "   "})
+    assert r.status_code == 400
+
+
+def test_endpoint_overlap_ge_max_400():
+    r = client.post("/v1/chunk", json={"source": "abc", "max_chunk_size": 10, "chunk_overlap": 10})
+    assert r.status_code == 400
+
+
+def test_backward_compatible_python_definitions_unsplit():
+    src = "import os\n\n" + "def f():\n" + "    x = 1\n" * 80 + "\n"
+    # old-style call: language only, no new params
+    r = client.post("/v1/chunk", json={"language": "python", "source": src, "include_context": True})
+    assert r.status_code == 200
+    body = r.json()
+    assert body["language"] == "python"
+    defs = [c for c in body["chunks"] if c["chunk_type"] == "definition"]
+    assert len(defs) == 1
+    # definition not split: no "part"
+    assert defs[0].get("part") in (None,)
+    # text matches one whole function
+    assert "def f()" in defs[0]["text"]
+
+
+def test_chunkitem_has_legacy_fields():
+    r = client.post("/v1/chunk", json={"language": "python", "source": "x = 1\n"})
+    assert r.status_code == 200
+    c = r.json()["chunks"][0]
+    for key in ("chunk_type", "node_type", "text", "start_byte", "end_byte", "start_point", "end_point"):
+        assert key in c
+
+
+def test_split_definitions_true_splits_python():
+    src = "def f():\n" + "    x = 1\n" * 200 + "\n"
+    r = client.post("/v1/chunk", json={
+        "language": "python", "source": src,
+        "max_chunk_size": 200, "chunk_overlap": 20, "split_definitions": True,
+    })
+    assert r.status_code == 200
+    parts = [c for c in r.json()["chunks"] if c.get("part")]
+    assert len(parts) >= 2
+
+
+def test_mode_text_overrides_python_filename():
+    r = client.post("/v1/chunk", json={"filename": "a.py", "source": "def f(): pass\n", "mode": "text"})
+    assert r.status_code == 200
+    assert r.json()["language"] == "text"

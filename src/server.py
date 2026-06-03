@@ -710,11 +710,27 @@ class ParseResponse(BaseModel):
 # --- Chunk models -----------------------------------------------------------
 
 class ChunkRequest(BaseModel):
-    language: str = Field(..., description="Grammar name (e.g. python, javascript).")
-    source: str = Field(..., description="Source code to chunk.")
+    source: str = Field(..., description="Source code or text to chunk.")
+    filename: Optional[str] = Field(
+        None, description="Original file name; its extension selects the strategy/grammar."
+    )
+    language: Optional[str] = Field(
+        None, description="Grammar name, or 'markdown'/'text'/'auto'. Optional."
+    )
+    mode: Optional[str] = Field(
+        None, description="Force strategy: 'auto' (default) / 'ast' / 'markdown' / 'text'."
+    )
+    max_chunk_size: int = Field(
+        500, ge=0, description="Max characters per chunk. 0 disables size splitting."
+    )
+    chunk_overlap: int = Field(
+        50, ge=0, description="Overlap characters between size-split pieces."
+    )
+    split_definitions: bool = Field(
+        False, description="Also size-split AST definition chunks when over the limit."
+    )
     include_context: bool = Field(
-        True,
-        description="Attach leading comments / decorators to the following definition.",
+        True, description="Attach leading comments / decorators to the following definition."
     )
 
 
@@ -732,6 +748,12 @@ class ChunkItem(BaseModel):
     end_byte: int
     start_point: dict[str, int]
     end_point: dict[str, int]
+    heading_path: Optional[str] = Field(
+        None, description='Markdown heading hierarchy, e.g. "Usage > Install". Null otherwise.'
+    )
+    part: Optional[int] = Field(
+        None, description="1-based index when a chunk was size-split; null otherwise."
+    )
 
 
 class ChunkResponse(BaseModel):
@@ -799,31 +821,46 @@ async def parse_code(request: ParseRequest) -> ParseResponse:
 @app.post("/v1/chunk", response_model=ChunkResponse)
 @app.post("/chunk", response_model=ChunkResponse)
 async def chunk_code(request: ChunkRequest) -> ChunkResponse:
-    lang = request.language.strip().lower()
-    if not lang:
-        raise HTTPException(400, "language is empty")
-    if lang not in SUPPORTED_LANGUAGES:
-        raise HTTPException(
-            400,
-            f"unsupported language: {request.language!r}. "
-            f"Use GET /v1/languages for available grammars.",
-        )
-    try:
-        parser = get_parser(lang)
-    except Exception as exc:
-        logger.exception("get_parser failed")
-        raise HTTPException(500, f"failed to load parser: {exc}") from exc
+    source = request.source
+    if not source.strip():
+        raise HTTPException(400, "source is empty")
+    if request.max_chunk_size > 0 and request.chunk_overlap >= request.max_chunk_size:
+        raise HTTPException(400, "chunk_overlap must be smaller than max_chunk_size")
 
-    source_bytes = request.source.encode("utf-8")
-    tree = parser.parse(source_bytes)
+    strategy, grammar = _resolve_strategy(request.filename, request.language, request.mode)
+
+    if strategy == "text":
+        raw_chunks = _chunk_text(source)
+        result_language = "text"
+    elif strategy == "markdown":
+        raw_chunks = _chunk_markdown(source)
+        result_language = "markdown"
+    else:  # ast
+        try:
+            parser = get_parser(grammar)
+        except Exception as exc:
+            logger.exception("get_parser failed")
+            raise HTTPException(500, f"failed to load parser: {exc}") from exc
+        source_bytes = source.encode("utf-8")
+        tree = parser.parse(source_bytes)
+        raw_chunks = _chunk_source(tree, source_bytes, grammar, request.include_context)
+        result_language = grammar
+
     try:
-        raw_chunks = _chunk_source(tree, source_bytes, lang, request.include_context)
+        raw_chunks = _apply_size_limit(
+            raw_chunks,
+            request.max_chunk_size,
+            request.chunk_overlap,
+            request.split_definitions,
+        )
+    except HTTPException:
+        raise
     except Exception as exc:
         logger.exception("chunking failed")
         raise HTTPException(500, f"chunking failed: {exc}") from exc
 
     chunks = [ChunkItem(**c) for c in raw_chunks]
-    return ChunkResponse(language=lang, chunks=chunks, chunk_count=len(chunks))
+    return ChunkResponse(language=result_language, chunks=chunks, chunk_count=len(chunks))
 
 
 if __name__ == "__main__":
