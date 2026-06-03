@@ -276,6 +276,105 @@ def _resolve_strategy(
     return ("text", None)
 
 
+# ---------------------------------------------------------------------------
+# Offset helpers (char-index based, absolute row/column)
+# ---------------------------------------------------------------------------
+
+def _point_at(source: str, char_index: int) -> dict[str, int]:
+    """Absolute {row, column} of a char index within *source*."""
+    prefix = source[:char_index]
+    row = prefix.count("\n")
+    last_nl = prefix.rfind("\n")
+    return {"row": row, "column": char_index - (last_nl + 1)}
+
+
+def _span_to_chunk(
+    source: str,
+    cstart: int,
+    cend: int,
+    chunk_type: str,
+    node_type: str,
+    heading_path: Optional[str],
+) -> dict[str, Any]:
+    """Build a chunk dict for source[cstart:cend] with byte/point offsets."""
+    text = source[cstart:cend]
+    chunk: dict[str, Any] = {
+        "chunk_type": chunk_type,
+        "node_type": node_type,
+        "text": text,
+        "start_byte": len(source[:cstart].encode("utf-8")),
+        "end_byte": len(source[:cend].encode("utf-8")),
+        "start_point": _point_at(source, cstart),
+        "end_point": _point_at(source, cend),
+    }
+    if heading_path is not None:
+        chunk["heading_path"] = heading_path
+    return chunk
+
+
+# ---------------------------------------------------------------------------
+# Markdown chunking (heading-based, no tree-sitter dependency)
+# ---------------------------------------------------------------------------
+
+_ATX_HEADING_RE = re.compile(r"^(#{1,6})[ \t]+(.+?)[ \t]*#*[ \t]*$")
+_FENCE_RE = re.compile(r"^\s*(```|~~~)")
+
+
+def _iter_lines(source: str):
+    """Yield (line_without_newline, line_start_char_offset)."""
+    start = 0
+    while True:
+        nl = source.find("\n", start)
+        if nl == -1:
+            yield source[start:], start
+            break
+        yield source[start:nl], start
+        start = nl + 1
+
+
+def _chunk_markdown(source: str) -> list[dict[str, Any]]:
+    """Split markdown into sections by ATX headings, tracking heading hierarchy."""
+    if not source.strip():
+        return []
+
+    sections: list[dict[str, Any]] = []
+    heading_stack: list[tuple[int, str]] = []
+    in_fence = False
+    fence_marker = ""
+    sec_start = 0
+    sec_heading_path: Optional[str] = None
+
+    def flush(end_char: int) -> None:
+        if end_char > sec_start and source[sec_start:end_char].strip():
+            sections.append(
+                _span_to_chunk(source, sec_start, end_char, "section", "section", sec_heading_path)
+            )
+
+    for line, line_start in _iter_lines(source):
+        fence = _FENCE_RE.match(line)
+        if fence:
+            marker = fence.group(1)
+            if not in_fence:
+                in_fence, fence_marker = True, marker
+            elif marker == fence_marker:
+                in_fence, fence_marker = False, ""
+            continue
+
+        heading = None if in_fence else _ATX_HEADING_RE.match(line)
+        if heading:
+            flush(line_start)
+            level = len(heading.group(1))
+            text = heading.group(2).strip()
+            while heading_stack and heading_stack[-1][0] >= level:
+                heading_stack.pop()
+            heading_stack.append((level, text))
+            sec_heading_path = " > ".join(t for _, t in heading_stack)
+            sec_start = line_start
+
+    flush(len(source))
+    return sections
+
+
 def _make_grouped_chunk(
     nodes: list[Node],
     source_bytes: bytes,
