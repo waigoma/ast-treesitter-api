@@ -375,6 +375,148 @@ def _chunk_markdown(source: str) -> list[dict[str, Any]]:
     return sections
 
 
+# ---------------------------------------------------------------------------
+# Plain text chunking + recursive size splitting
+# ---------------------------------------------------------------------------
+
+_SPLIT_SEPARATORS: tuple[str, ...] = (
+    "\n\n", "\n", "。", "．", ". ", "! ", "? ", "！", "？", " ", "",
+)
+
+
+def _chunk_text(source: str) -> list[dict[str, Any]]:
+    """Whole text as one chunk; size splitting is applied later."""
+    if not source.strip():
+        return []
+    return [_span_to_chunk(source, 0, len(source), "text", "text", None)]
+
+
+def _split_keep_offsets(text: str, sep: str) -> list[tuple[int, int]]:
+    """Split text by sep, keeping sep attached to the preceding fragment.
+
+    Returns (start, end) char spans whose concatenation reconstructs text.
+    sep == "" yields per-character fragments.
+    """
+    if sep == "":
+        return [(i, i + 1) for i in range(len(text))]
+    frags: list[tuple[int, int]] = []
+    start = 0
+    seplen = len(sep)
+    idx = text.find(sep, start)
+    while idx != -1:
+        end = idx + seplen
+        frags.append((start, end))
+        start = end
+        idx = text.find(sep, start)
+    if start < len(text):
+        frags.append((start, len(text)))
+    return frags
+
+
+def _first_usable_sep(text: str, separators: tuple[str, ...]) -> str:
+    for sep in separators:
+        if sep == "" or sep in text:
+            return sep
+    return ""
+
+
+def _base_spans(text: str, max_size: int, separators: tuple[str, ...]) -> list[tuple[int, int]]:
+    """Contiguous, non-overlapping spans covering text, each <= max_size where possible."""
+    n = len(text)
+    if n <= max_size:
+        return [(0, n)]
+
+    sep = _first_usable_sep(text, separators)
+    frags = _split_keep_offsets(text, sep)
+    next_seps = separators[separators.index(sep) + 1:] or ("",)
+
+    spans: list[tuple[int, int]] = []
+    cur_start: Optional[int] = None
+    cur_end = 0
+    for fs, fe in frags:
+        if fe - fs > max_size:
+            if cur_start is not None:
+                spans.append((cur_start, cur_end))
+                cur_start = None
+            for rs, re_ in _base_spans(text[fs:fe], max_size, next_seps):
+                spans.append((fs + rs, fs + re_))
+            continue
+        if cur_start is None:
+            cur_start, cur_end = fs, fe
+        elif fe - cur_start <= max_size:
+            cur_end = fe
+        else:
+            spans.append((cur_start, cur_end))
+            cur_start, cur_end = fs, fe
+    if cur_start is not None:
+        spans.append((cur_start, cur_end))
+    return spans
+
+
+def _split_text_recursive(text: str, max_size: int, overlap: int) -> list[tuple[int, int]]:
+    """Spans each <= max_size with `overlap` chars of overlap between neighbors."""
+    base = _base_spans(text, max_size, _SPLIT_SEPARATORS)
+    if overlap <= 0 or len(base) <= 1:
+        return base
+    out: list[tuple[int, int]] = [base[0]]
+    for s, e in base[1:]:
+        out.append((max(0, s - overlap), e))
+    return out
+
+
+def _offset_point(base_point: dict[str, int], text: str, char_index: int) -> dict[str, int]:
+    """Absolute {row,column} of char_index within a sub-slice whose start is base_point."""
+    prefix = text[:char_index]
+    nl = prefix.count("\n")
+    if nl == 0:
+        return {"row": base_point["row"], "column": base_point["column"] + char_index}
+    last_nl = prefix.rfind("\n")
+    return {"row": base_point["row"] + nl, "column": char_index - (last_nl + 1)}
+
+
+def _subchunk(parent: dict[str, Any], cs: int, ce: int, part: int) -> dict[str, Any]:
+    ptext = parent["text"]
+    out: dict[str, Any] = {
+        "chunk_type": parent["chunk_type"],
+        "node_type": parent["node_type"],
+        "text": ptext[cs:ce],
+        "start_byte": parent["start_byte"] + len(ptext[:cs].encode("utf-8")),
+        "end_byte": parent["start_byte"] + len(ptext[:ce].encode("utf-8")),
+        "start_point": _offset_point(parent["start_point"], ptext, cs),
+        "end_point": _offset_point(parent["start_point"], ptext, ce),
+        "part": part,
+    }
+    if parent.get("heading_path") is not None:
+        out["heading_path"] = parent["heading_path"]
+    return out
+
+
+def _apply_size_limit(
+    chunks: list[dict[str, Any]],
+    max_size: int,
+    overlap: int,
+    split_definitions: bool,
+) -> list[dict[str, Any]]:
+    """Split any chunk longer than max_size; definitions protected unless enabled."""
+    if max_size <= 0:
+        return chunks
+    out: list[dict[str, Any]] = []
+    for ch in chunks:
+        if ch["chunk_type"] == "definition" and not split_definitions:
+            out.append(ch)
+            continue
+        if len(ch["text"]) <= max_size:
+            out.append(ch)
+            continue
+        spans = _split_text_recursive(ch["text"], max_size, overlap)
+        if len(spans) <= 1:
+            out.append(ch)
+            continue
+        for part, (cs, ce) in enumerate(spans, start=1):
+            out.append(_subchunk(ch, cs, ce, part))
+    return out
+
+
 def _make_grouped_chunk(
     nodes: list[Node],
     source_bytes: bytes,

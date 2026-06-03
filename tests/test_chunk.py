@@ -127,3 +127,102 @@ def chunks_for(src):
 
 def test_markdown_empty_returns_empty():
     assert _chunk_markdown("   \n  ") == []
+
+
+from server import (
+    _chunk_text,
+    _split_text_recursive,
+    _apply_size_limit,
+    _base_spans,
+    _SPLIT_SEPARATORS,
+)
+
+
+def test_chunk_text_single_when_small():
+    chunks = _chunk_text("hello world")
+    assert len(chunks) == 1
+    assert chunks[0]["chunk_type"] == "text"
+    assert chunks[0]["text"] == "hello world"
+
+
+def test_chunk_text_empty():
+    assert _chunk_text("   ") == []
+
+
+def test_base_spans_cover_text_contiguously():
+    text = "para one.\n\npara two.\n\npara three is here."
+    spans = _base_spans(text, 12, _SPLIT_SEPARATORS)
+    # spans cover the whole text with no gaps
+    assert spans[0][0] == 0
+    assert spans[-1][1] == len(text)
+    for (s, e) in spans:
+        assert e - s <= 12 or "\n\n" not in text[s:e]  # oversized only if unsplittable
+
+
+def test_split_text_recursive_overlap():
+    text = "abcdefghij" * 5  # 50 chars, no separators
+    spans = _split_text_recursive(text, 20, 5)
+    # first span no overlap, later spans start 5 earlier than their base start
+    assert spans[0][0] == 0
+    assert len(spans) >= 2
+    # overlap: span[1] starts before span[0] ends
+    assert spans[1][0] < spans[0][1]
+
+
+def test_apply_size_limit_disabled_when_zero():
+    chunks = [{"chunk_type": "text", "node_type": "text",
+               "text": "x" * 1000, "start_byte": 0, "end_byte": 1000,
+               "start_point": {"row": 0, "column": 0},
+               "end_point": {"row": 0, "column": 1000}}]
+    out = _apply_size_limit(chunks, 0, 0, False)
+    assert len(out) == 1
+
+
+def test_apply_size_limit_splits_text():
+    text = "x" * 1000
+    chunks = [{"chunk_type": "text", "node_type": "text",
+               "text": text, "start_byte": 0, "end_byte": 1000,
+               "start_point": {"row": 0, "column": 0},
+               "end_point": {"row": 0, "column": 1000}}]
+    out = _apply_size_limit(chunks, 500, 50, False)
+    assert len(out) > 1
+    assert out[0]["part"] == 1
+    assert out[1]["part"] == 2
+
+
+def test_apply_size_limit_protects_definitions():
+    text = "def f():\n" + "    pass\n" * 200
+    chunks = [{"chunk_type": "definition", "node_type": "function_definition",
+               "text": text, "start_byte": 0, "end_byte": len(text.encode()),
+               "start_point": {"row": 0, "column": 0},
+               "end_point": {"row": 200, "column": 0}}]
+    out = _apply_size_limit(chunks, 100, 10, False)
+    assert len(out) == 1  # protected
+
+
+def test_apply_size_limit_splits_definitions_when_enabled():
+    text = "def f():\n" + "    pass\n" * 200
+    chunks = [{"chunk_type": "definition", "node_type": "function_definition",
+               "text": text, "start_byte": 0, "end_byte": len(text.encode()),
+               "start_point": {"row": 0, "column": 0},
+               "end_point": {"row": 200, "column": 0}}]
+    out = _apply_size_limit(chunks, 100, 10, True)
+    assert len(out) > 1
+
+
+def test_subchunk_offsets_are_correct():
+    src = "line0\nline1\nline2\nline3\n" * 30
+    chunks = _chunk_text(src)
+    out = _apply_size_limit(chunks, 100, 10, False)
+    encoded = src.encode("utf-8")
+    for c in out:
+        assert encoded[c["start_byte"]:c["end_byte"]] == c["text"].encode("utf-8")
+
+
+def test_multibyte_offsets():
+    src = "あいうえお\nかきくけこ\n" * 50
+    chunks = _chunk_text(src)
+    out = _apply_size_limit(chunks, 60, 6, False)
+    encoded = src.encode("utf-8")
+    for c in out:
+        assert encoded[c["start_byte"]:c["end_byte"]] == c["text"].encode("utf-8")
