@@ -140,6 +140,118 @@ curl -s -X POST http://127.0.0.1:8008/v1/parse \
 
 ---
 
+### `POST /v1/chunk`
+
+ソースコードやテキストを意味単位で分割した **チャンク配列** を返します。
+ファイル名の拡張子を渡すだけで AST / markdown / text の各戦略を自動選択します。
+
+#### リクエストボディ
+
+| パラメータ | 型 | 既定 | 説明 |
+|---|---|---|---|
+| `source` | string | (必須) | 本文 |
+| `filename` | string | — | 例: `"README.md"`。拡張子で戦略を自動選択 |
+| `language` | string | — | grammar 名 / `markdown` / `text` / `auto`。省略可 |
+| `mode` | string | `auto` | `auto` / `ast` / `markdown` / `text` |
+| `max_chunk_size` | int | `500` | 1 チャンクの最大文字数。`0` で無効 |
+| `chunk_overlap` | int | `50` | 分割片の重複文字数 |
+| `split_definitions` | bool | `false` | 定義も上限超過時に分割するか |
+| `include_context` | bool | `true` | 先頭コメント/デコレータを次の定義へ付与 |
+
+#### 自動戦略選択の優先順位
+
+`filename` があれば拡張子で判定 → 無ければ `language` → どれも該当しなければ `text` にフォールバック (`400` を返さない)。
+
+| 拡張子の例 | 適用戦略 |
+|---|---|
+| `.md` / `.markdown` / `.mdx` | markdown (見出し単位で分割) |
+| `.txt` / `.log` / `.rst` | text (文字数単位で分割) |
+| `.py` / `.ts` / `.go` 等 | ast (関数・クラス単位で分割) |
+| 不明な拡張子 | text にフォールバック |
+
+#### Markdown ファイルの例
+
+```bash
+curl -s http://127.0.0.1:8008/v1/chunk \
+  -H 'Content-Type: application/json' \
+  -d '{"filename": "README.md", "source": "# Title\n\n## Usage\n...\n\n## Install\n..."}'
+```
+
+レスポンス (抜粋):
+
+```json
+{
+  "language": "markdown",
+  "chunk_count": 3,
+  "chunks": [
+    {
+      "chunk_type": "section",
+      "node_type": "section",
+      "text": "# Title\n\n",
+      "heading_path": "Title",
+      "part": null,
+      "start_byte": 0,
+      "end_byte": 9,
+      "start_point": { "row": 0, "column": 0 },
+      "end_point": { "row": 2, "column": 0 }
+    },
+    {
+      "chunk_type": "section",
+      "node_type": "section",
+      "text": "## Usage\n...\n\n",
+      "heading_path": "Title > Usage",
+      "part": null,
+      ...
+    }
+  ]
+}
+```
+
+長い節は `max_chunk_size` を超えた場合に `part: 1`, `part: 2`, … 付きで分割されます。
+
+#### テキストファイルの例
+
+```bash
+curl -s http://127.0.0.1:8008/v1/chunk \
+  -H 'Content-Type: application/json' \
+  -d '{"filename": "notes.txt", "source": "..."}'
+```
+
+`language: "text"` で返り、500 文字ごとに `chunk_overlap: 50` 文字のオーバーラップを付けて分割されます。
+
+#### Python コードの例 (従来どおり)
+
+```bash
+curl -s http://127.0.0.1:8008/v1/chunk \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "language": "python",
+    "source": "def hello():\n    return 42\n",
+    "include_context": true
+  }'
+```
+
+#### レスポンスフィールド
+
+チャンクオブジェクトには以下のフィールドが含まれます。
+
+| フィールド | 説明 |
+|---|---|
+| `chunk_type` | `definition` / `context` / `section` / `text` |
+| `node_type` | AST ノード種別 (AST) または `"section"` / `"text"` |
+| `text` | チャンク本文 |
+| `start_byte` / `end_byte` | ソース内バイトオフセット |
+| `start_point` / `end_point` | `{row, column}` 形式の位置 |
+| `heading_path` | Markdown の見出し階層 (例: `"Usage > Install"`)。Markdown 以外は `null` |
+| `part` | サイズ分割で生成された場合の 1 始まりの連番。分割なしは `null` |
+
+#### 後方互換
+
+従来の `{language, source, include_context}` 形式はそのまま動作します。
+`definition` チャンクは `split_definitions: true` を指定しない限り、サイズ上限を超えても分割されません。
+
+---
+
 ## 環境変数
 
 `.env.example` を `.env` にコピーして使用します。
