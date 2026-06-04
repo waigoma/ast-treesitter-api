@@ -89,15 +89,28 @@ curl -s http://127.0.0.1:8008/v1/languages
 
 | フィールド | 型 | 必須 | 既定値 | 説明 |
 |---|---|:---:|---|---|
-| `language` | string | ✓ | — | 言語名 (`python`, `javascript` 等) |
 | `source` | string | ✓ | — | パースするソースコード |
+| `filename` | string | | `null` | ファイル名。拡張子から文法を自動判定し `language` より優先される |
+| `language` | string | | `null` | 言語名 (`python`, `javascript` 等)。`filename` で判定できない場合のフォールバック |
 | `include_text` | boolean | | `true` | 各ノードにソーステキストを含めるか |
 | `max_depth` | integer | | `512` | JSON ツリーの最大深度 (1–4096) |
 | `sexp` | boolean | | `false` | S 式文字列を追加返却するか |
 
+> `filename` と `language` はどちらか一方が必要です。両方指定した場合は `filename` の拡張子が優先され、拡張子が不明な場合のみ `language` にフォールバックします。
+
 #### Python の例
 
 ```bash
+# filename で言語を指定する場合
+curl -s -X POST http://127.0.0.1:8008/v1/parse \
+  -H "Content-Type: application/json" \
+  -d '{
+    "filename": "hello.py",
+    "source": "def hello():\n    return 42",
+    "sexp": true
+  }'
+
+# language で言語を指定する場合
 curl -s -X POST http://127.0.0.1:8008/v1/parse \
   -H "Content-Type: application/json" \
   -d '{
@@ -284,7 +297,7 @@ cp .env.example .env
 | Method | `POST` |
 | URL | `http://<ホスト>:8008/v1/parse` |
 | Body Content Type | `JSON` |
-| Body | `{"language": "python", "source": "{{ $json.code }}"}` |
+| Body | `{"filename": "script.py", "source": "{{ $json.code }}"}` |
 
 n8n と API が同じ Docker ネットワーク内にある場合は、コンテナ名 (`ast-treesitter`) や `host.docker.internal` を URL に使用してください。
 

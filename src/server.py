@@ -715,8 +715,11 @@ app = FastAPI(title="AST Tree-sitter API", version="1.0.0")
 
 
 class ParseRequest(BaseModel):
-    language: str = Field(..., description="Grammar name (e.g. python, javascript).")
     source: str = Field(..., description="Source code to parse.")
+    filename: Optional[str] = Field(
+        None, description="Original file name; its extension selects the grammar (takes priority over language)."
+    )
+    language: Optional[str] = Field(None, description="Grammar name (e.g. python, javascript). Fallback when filename is absent or its extension is unknown.")
     include_text: bool = Field(True, description="Include source slice per node.")
     max_depth: int = Field(
         MAX_TREE_DEPTH,
@@ -809,13 +812,24 @@ async def list_languages() -> dict[str, Any]:
 @app.post("/v1/parse", response_model=ParseResponse)
 @app.post("/parse", response_model=ParseResponse)
 async def parse_code(request: ParseRequest) -> ParseResponse:
-    lang = request.language.strip().lower()
-    if not lang:
-        raise HTTPException(400, "language is empty")
+    # filename extension takes priority; language is the fallback
+    lang: Optional[str] = None
+    if request.filename:
+        lang = _EXTENSION_MAP.get(_ext_of(request.filename))
+        if lang and lang not in SUPPORTED_LANGUAGES:
+            lang = None
+    if lang is None and request.language:
+        lang = request.language.strip().lower() or None
+    if lang is None:
+        raise HTTPException(
+            400,
+            "Either filename (with a known extension) or language is required. "
+            "See GET /v1/languages.",
+        )
     if lang not in SUPPORTED_LANGUAGES:
         raise HTTPException(
             400,
-            f"unsupported language: {request.language!r}. "
+            f"unsupported language: {lang!r}. "
             f"Use GET /v1/languages for available grammars.",
         )
     try:
