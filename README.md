@@ -3,11 +3,12 @@
 [Tree-sitter](https://tree-sitter.github.io/tree-sitter/) を使い、ソースコードを **JSON 構文木 (AST)** に変換する軽量 HTTP API サーバーです。
 n8n などのワークフローエンジンや CI パイプラインから POST リクエスト 1 本で構文解析を呼び出せます。
 
-## 対応言語 (22 種)
+## 対応言語 (27 種)
 
-`bash` / `c` / `c_sharp` / `cpp` / `css` / `elixir` / `go` / `html` / `java` /
-`javascript` / `json` / `kotlin` / `lua` / `php` / `python` / `ruby` / `rust` /
-`scala` / `toml` / `tsx` / `typescript` / `yaml`
+`bash` / `c` / `c_sharp` / `cpp` / `css` / `dockerfile` / `elixir` / `go` /
+`hcl` / `html` / `java` / `javascript` / `json` / `julia` / `kotlin` / `lua` /
+`php` / `python` / `r` / `ruby` / `rust` / `scala` / `sql` / `toml` / `tsx` /
+`typescript` / `yaml`
 
 ---
 
@@ -59,7 +60,7 @@ curl -s http://127.0.0.1:8008/health
 ```json
 {
   "status": "ok",
-  "languages_loaded": 22,
+  "languages_loaded": 27,
   "max_tree_depth_default": 512,
   "max_nodes": 200000
 }
@@ -165,8 +166,13 @@ curl -s -X POST http://127.0.0.1:8008/v1/parse \
 | 拡張子の例 | 適用戦略 |
 |---|---|
 | `.md` / `.markdown` / `.mdx` | markdown (見出し単位で分割) |
-| `.txt` / `.log` / `.rst` | text (文字数単位で分割) |
-| `.py` / `.ts` / `.go` 等 | ast (関数・クラス単位で分割) |
+| `.txt` / `.log` / `.rst` / `.csv` | text (文字数単位で分割) |
+| `.py` / `.ts` / `.go` / `.rs` 等 | ast (関数・クラス単位で分割) |
+| `.sql` | ast (SELECT / CREATE / INSERT 等のステートメント単位で分割) |
+| `.r` | ast (トップレベルの関数・変数代入ごとに分割) |
+| `.jl` | ast (関数・struct・module 単位で分割) |
+| `.tf` / `.hcl` | ast (ファイル全体を 1 チャンク、サイズ分割は有効) |
+| `.dockerfile` | ast (ファイル全体を 1 チャンク、サイズ分割は有効) |
 | 不明な拡張子 | text にフォールバック |
 
 #### Markdown ファイルの例
@@ -315,7 +321,7 @@ docker compose -f compose.yml -f compose.build.yml build
 | パッケージ | バージョン | 備考 |
 |---|---|---|
 | `tree-sitter` | `==0.21.3` | `tree-sitter-languages` 1.10.x との互換のため固定 |
-| `tree-sitter-languages` | `==1.10.2` | 22 言語バンドル |
+| `tree-sitter-languages` | `==1.10.2` | 27 言語バンドル |
 | `fastapi` | `>=0.110` | |
 | `uvicorn[standard]` | `>=0.29` | |
 | `pydantic` | `>=2.6` | |
