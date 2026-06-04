@@ -33,19 +33,24 @@ _LANGUAGE_CANDIDATES: tuple[str, ...] = (
     "cpp",
     "css",
     "dart",
+    "dockerfile",
     "elixir",
     "go",
+    "hcl",
     "html",
     "java",
     "javascript",
     "json",
+    "julia",
     "kotlin",
     "lua",
     "php",
     "python",
+    "r",
     "ruby",
     "rust",
     "scala",
+    "sql",
     "toml",
     "tsx",
     "typescript",
@@ -134,12 +139,24 @@ _CHUNK_BOUNDARY_TYPES: dict[str, set[str]] = {
     "elixir": {"call"},
     "bash": {"function_definition"},
     "clojure": {"list_lit"},
+    "sql": {
+        "select_statement", "create_table_statement", "insert_statement",
+        "update_statement", "delete_statement", "drop_statement",
+        "create_index_statement", "alter_statement",
+    },
+    "r": {"left_assignment", "equals_assignment", "right_assignment"},
+    "julia": {
+        "function_definition", "struct_definition", "module_definition",
+        "abstract_definition", "macro_definition",
+    },
     # No definition boundaries – return whole file as one chunk
     "html": set(),
     "css": set(),
     "json": set(),
     "toml": set(),
     "yaml": set(),
+    "hcl": set(),
+    "dockerfile": set(),
 }
 
 # Node types that should attach to the *following* definition as context.
@@ -196,6 +213,15 @@ _EXTENSION_MAP: dict[str, str] = {
     ".json": "json",
     ".toml": "toml",
     ".yaml": "yaml", ".yml": "yaml",
+    # extensions missing from original map
+    ".dart": "dart",
+    ".clj": "clojure", ".cljs": "clojure", ".cljc": "clojure",
+    # newly added grammars
+    ".sql": "sql",
+    ".r": "r",
+    ".tf": "hcl", ".hcl": "hcl",
+    ".jl": "julia",
+    ".dockerfile": "dockerfile",
 }
 
 _VALID_MODES = {"auto", "ast", "markdown", "text"}
